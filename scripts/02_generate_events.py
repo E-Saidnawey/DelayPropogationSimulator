@@ -3,20 +3,21 @@ from datetime import datetime
 
 def generate_events_table(cleaned_data):
     # Create departure events (vectorized)
+    
     departures = pd.DataFrame({
         'event_id': ['EVT_' + str(i).zfill(8) for i in range(1, len(cleaned_data)*2, 2)],
         'asset_id': cleaned_data['TAIL_NUM'],
         'scheduled_time': cleaned_data['CRS_DEP_TIME'],
         'actual_time': cleaned_data['DEP_TIME'],
         'event_type': 'DEPARTURE',
-        'delay_minutes': cleaned_data['DEP_DELAY'].fillna(0),
         'flight_date': cleaned_data['FL_DATE'],
         'carrier': cleaned_data['OP_UNIQUE_CARRIER'],
         'flight_number': cleaned_data['MKT_CARRIER_FL_NUM'],
         'origin': cleaned_data['ORIGIN_AIRPORT_ID'],
-        'destination': cleaned_data['DEST_AIRPORT_ID']
+        'destination': cleaned_data['DEST_AIRPORT_ID'],
+
     })
-    
+
     # Create arrival events (vectorized)
     arrivals = pd.DataFrame({
         'event_id': ['EVT_' + str(i).zfill(8) for i in range(2, len(cleaned_data)*2+1, 2)],
@@ -24,7 +25,6 @@ def generate_events_table(cleaned_data):
         'scheduled_time': cleaned_data['CRS_ARR_TIME'],
         'actual_time': cleaned_data['ARR_TIME'],
         'event_type': 'ARRIVAL',
-        'delay_minutes': cleaned_data['ARR_DELAY'].fillna(0),
         'flight_date': cleaned_data['FL_DATE'],
         'carrier': cleaned_data['OP_UNIQUE_CARRIER'],
         'flight_number': cleaned_data['MKT_CARRIER_FL_NUM'],
@@ -50,6 +50,7 @@ if __name__ == '__main__':
     df = pd.read_csv(input_file)
     print(f"Loaded {len(df):,} rows")
     # Clean and convert
+
     events_df = generate_events_table(df)
     
     if len(events_df) > 0:
@@ -66,7 +67,6 @@ if __name__ == '__main__':
                          'scheduled_time',
                          'actual_time',
                          'event_type',
-                         'delay_minutes',
                          'flight_date',
                          'carrier',
                          'flight_number',
