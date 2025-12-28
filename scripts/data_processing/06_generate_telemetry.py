@@ -22,30 +22,14 @@ def create_telemetry_stream(flight_events_df):
     # Iterate through each event
     for idx, row in flight_events_df.iterrows():
         
-        # Create scheduled emission
-        scheduled_emission = {
-            'timestamp': row['scheduled_time'],
-            'event_id': row['event_id'],
-            'asset_id': row['asset_id'],
-            'state': 'scheduled',
-            'event_type': row['event_type'],
-            # Optional: include reference data
-            'flight_date': row['flight_date'],
-            'carrier': row['carrier'],
-            'flight_number': row['flight_number'],
-            'origin': row['origin'],
-            'destination': row['destination']
-        }
-        
         # Create actual emission
         actual_emission = {
             'timestamp': row['actual_time'],
+            'scheduled_time': row['scheduled_time'],
             'event_id': row['event_id'],
             'asset_id': row['asset_id'],
             'state': 'actual',
             'event_type': row['event_type'],
-            # Optional: include reference data
-            'flight_date': row['flight_date'],
             'carrier': row['carrier'],
             'flight_number': row['flight_number'],
             'origin': row['origin'],

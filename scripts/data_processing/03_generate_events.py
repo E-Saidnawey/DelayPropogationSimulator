@@ -7,8 +7,8 @@ def generate_events_table(cleaned_data):
     departures = pd.DataFrame({
         'event_id': ['EVT_' + str(i).zfill(8) for i in range(1, len(cleaned_data)*2, 2)],
         'asset_id': cleaned_data['TAIL_NUM'],
-        'scheduled_time': cleaned_data['CRS_DEP_TIME'],
-        'actual_time': cleaned_data['DEP_TIME'],
+        'scheduled_time': cleaned_data['scheduled_dep_utc'],
+        'actual_time': cleaned_data['actual_dep_utc'],
         'event_type': 'DEPARTURE',
         'flight_date': cleaned_data['FL_DATE'],
         'carrier': cleaned_data['OP_UNIQUE_CARRIER'],
@@ -22,8 +22,8 @@ def generate_events_table(cleaned_data):
     arrivals = pd.DataFrame({
         'event_id': ['EVT_' + str(i).zfill(8) for i in range(2, len(cleaned_data)*2+1, 2)],
         'asset_id': cleaned_data['TAIL_NUM'],
-        'scheduled_time': cleaned_data['CRS_ARR_TIME'],
-        'actual_time': cleaned_data['ARR_TIME'],
+        'scheduled_time': cleaned_data['scheduled_arr_utc'],
+        'actual_time': cleaned_data['actual_arr_utc'],
         'event_type': 'ARRIVAL',
         'flight_date': cleaned_data['FL_DATE'],
         'carrier': cleaned_data['OP_UNIQUE_CARRIER'],

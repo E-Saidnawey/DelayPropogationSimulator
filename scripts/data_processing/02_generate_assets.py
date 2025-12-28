@@ -1,3 +1,34 @@
+# # 1. Load your flight data
+# flights_df = pd.read_csv('your_flights.csv')
+
+# # 2. Load the OpenSky data 
+# # We'll only load the useful columns to save memory
+# useful_columns = ['registration', 'manufacturername', 'model', 'typecode', 'operator']
+# opensky_df = pd.read_csv('aircraftDatabase.csv', usecols=useful_columns)
+
+# # 3. Clean the Tail Numbers (Crucial Step!)
+# # Tail numbers can sometimes have hidden spaces or case differences
+# flights_df['TAIL_NUM'] = flights_df['TAIL_NUM'].astype(str).str.strip().str.upper()
+# opensky_df['registration'] = opensky_df['registration'].astype(str).str.strip().str.upper()
+
+# # 4. Perform the Merge
+# # This says: "Take flights_df, and add columns from opensky_df where TAIL_NUM == registration"
+# merged_df = pd.merge(
+#     flights_df, 
+#     opensky_df, 
+#     left_on='TAIL_NUM', 
+#     right_on='registration', 
+#     how='left'
+# )
+
+# # 5. Clean up (Optional)
+# # Since we have TAIL_NUM, we don't need the 'registration' column anymore
+# merged_df.drop(columns=['registration'], inplace=True)
+
+# # 6. Save your new enriched CSV
+# merged_df.to_csv('enriched_flight_data.csv', index=False)
+
+
 import pandas as pd
 import copy
 from datetime import datetime, timedelta
@@ -33,7 +64,33 @@ def generate_assets_table(cleaned_data):
         avg_hours_per_day.rename('avg_hours_per_day')
     ], axis=1).reset_index()
     
-    return assets_final
+    aircraft_mdl_df = pd.read_csv('data/raw/MASTER.txt')
+    aircraft_seat_df = pd.read_csv('data/raw/ACFTREF.txt')
+
+    aircraft_mdl_df['N-NUMBER'] = 'N' + aircraft_mdl_df['N-NUMBER']
+
+    assets_final['TAIL_NUM'] = assets_final['TAIL_NUM'].astype(str).str.strip().str.upper()
+    aircraft_mdl_df['N-NUMBER'] = aircraft_mdl_df['N-NUMBER'].astype(str).str.strip().str.upper()
+
+    merged_df = pd.merge(
+        assets_final, 
+        aircraft_mdl_df[['N-NUMBER', 'MFR MDL CODE']], 
+        left_on='TAIL_NUM', 
+        right_on='N-NUMBER', 
+        how='left'
+    )
+
+    merged_df = merged_df.dropna(subset=['N-NUMBER'], inplace=False)
+
+    final_df = pd.merge(
+            merged_df,
+            aircraft_seat_df[['CODE', 'NO-SEATS']],
+            left_on='MFR MDL CODE', 
+            right_on='CODE',
+            how='left'
+        )
+
+    return final_df
 
 if __name__ == '__main__':
     # File paths - UPDATE THESE
@@ -54,8 +111,18 @@ if __name__ == '__main__':
 
         print(f"\n✅ Done! Cleaned data saved to {output_file}")
         
-        # Optional: Show a sample
+        print("\nUpdating Flights Cleaned Data")
+        processed_tailnum = set(assets_df['TAIL_NUM'])
+        
+        df_cleaned = pd.read_csv('data/processed/flights_cleaned_us_only.csv')
+        tail_mask = df_cleaned['TAIL_NUM'].isin(processed_tailnum)
+
+        df_cleaned = df_cleaned[tail_mask].copy()
+        df_cleaned.to_csv('data/processed/flights_cleaned_us_only.csv')
+
         print("\nSample of cleaned data:")
         print(assets_df.head(10))
+
+
     else:
         print(f"\n❌ No data to save. Check your input files and filters.")
