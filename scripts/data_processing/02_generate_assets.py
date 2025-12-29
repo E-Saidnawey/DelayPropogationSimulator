@@ -118,7 +118,7 @@ if __name__ == '__main__':
         tail_mask = df_cleaned['TAIL_NUM'].isin(processed_tailnum)
 
         df_cleaned = df_cleaned[tail_mask].copy()
-        df_cleaned.to_csv('data/processed/flights_cleaned_us_only.csv')
+        df_cleaned.to_csv('data/processed/flights_cleaned_us_only.csv', index=False)
 
         print("\nSample of cleaned data:")
         print(assets_df.head(10))

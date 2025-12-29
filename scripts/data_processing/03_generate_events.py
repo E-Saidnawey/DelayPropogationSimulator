@@ -38,6 +38,14 @@ def generate_events_table(cleaned_data):
     # Sort by event_id to maintain proper order
     events = events.sort_values('event_id').reset_index(drop=True)
     
+        # Check if any asset has two events scheduled at the exact same time
+    duplicates = events[events.duplicated(subset=['asset_id', 'scheduled_time'], keep=False)]
+    if not duplicates.empty:
+        print("Found overlapping events for the same asset:")
+        print(duplicates.sort_values(['asset_id', 'scheduled_time']).head(10))
+
+        print(f"Found {duplicates.size} duplicates")
+
     return events
 
 if __name__ == '__main__':
