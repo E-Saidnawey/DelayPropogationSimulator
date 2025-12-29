@@ -1,252 +1,290 @@
+import copy
 import pandas as pd
-from datetime import datetime, timedelta
-from scripts.simulation.initialize import load_and_prepare_data, initialize_simulation
+import networkx as nx
+from datetime import timedelta
+from typing import Dict, Set, List, Optional, Tuple
+import numpy as np
+from scripts.simulation.initialize import initialize_asset_states, load_and_prepare_data
 
-def run_event_simulation(asset_state, telemetry_stream, turnaround_time_minutes=30):
-    """
-    STEP 4: Event-driven simulation loop
-    
-    Processes events chronologically, tracks delays, and propagates impacts.
-    
-    Parameters:
-    -----------
-    
-    
-    turnaround_time_minutes : int - minimum time between flights for same aircraft
-    
-    Returns:
-    --------
-    tuple : (updated_event_queue, updated_asset_state, delay_summary)
-    """
-    
-    print("Starting simulation...")
-    print(f"Processing {len(event_queue)} events")
-    
-    turnaround = timedelta(minutes=turnaround_time_minutes)
-    delay_summary = []
-    
-    # Process events in chronological order
-    for idx, event in telemetry_stream.iterrows():
-        event_id = event['event_id']
-        scheduled_time = event['scheduled_time']
-        actual_time = event['actual_time']
-        asset_id = event['asset_id']
-        event_type = event['event_type']
-        
-        # ============================================================
-        # STEP 4.1: Check Asset Availability
-        # ============================================================
-        
-        # When does this aircraft become available?
-        asset_available_at = asset_state[asset_id]['available_at']
-        
-        # For departures, we need the aircraft ready BEFORE departure
-        # For arrivals, we just need to track when it lands
-        if event_type == 'departure':
-            required_ready_time = scheduled_time
-            
-            # Is the aircraft available in time?
-            if asset_available_at > required_ready_time:
-                # Aircraft not ready → DELAY
-                asset_induced_delay = (asset_available_at - required_ready_time).total_seconds() / 60
-            else:
-                # Aircraft ready on time
-                asset_induced_delay = 0
-        else:
-            # Arrivals don't need availability check
-            asset_induced_delay = 0
-        
-        # ============================================================
-        # STEP 4.2: Calculate Total Delay
-        # ============================================================
-        
-        # Compare actual vs scheduled (this is your historical data)
-        historical_delay = (actual_time - scheduled_time).total_seconds() / 60
-        
-        # Get any propagated delay from upstream events
-        propagated_delay = event_queue.loc[idx, 'actual_delay']
-        
-        # Total delay is the maximum of all delay sources
-        total_delay = max(historical_delay, asset_induced_delay, propagated_delay)
-        
-        # Update the event queue with actual delay
-        event_queue.loc[idx, 'actual_delay'] = total_delay
-        
-        # Calculate actual event time
-        actual_event_time = scheduled_time + timedelta(minutes=total_delay)
-        
-        # ============================================================
-        # STEP 4.3: Update Asset State
-        # ============================================================
-        
-        if event_type == 'departure':
-            # Aircraft is now in flight, not available
-            # We'll update availability when it arrives
-            asset_state[asset_id]['current_flight'] = event_id
-            
-        elif event_type == 'arrival':
-            # Aircraft has landed, will be available after turnaround
-            asset_state[asset_id]['available_at'] = actual_event_time + turnaround
-            asset_state[asset_id]['current_flight'] = None
-            
-            # Track utilization (flight time)
-            # Find corresponding departure to calculate flight duration
-            departure_event = event_queue[
-                (event_queue['asset_id'] == asset_id) & 
-                (event_queue['event_type'] == 'departure') &
-                (event_queue['scheduled_time'] < scheduled_time)
-            ].iloc[-1]  # Get most recent departure
-            
-            flight_duration = (actual_event_time - departure_event['scheduled_time']).total_seconds() / 3600
-            asset_state[asset_id]['utilization'] += flight_duration
-        
-        # Track cumulative delay for this aircraft
-        if total_delay > 0:
-            asset_state[asset_id]['cumulative_delay'] += total_delay
-            asset_state[asset_id]['delay_events'].append({
-                'event_id': event_id,
-                'delay_minutes': total_delay,
-                'delay_type': 'asset' if asset_induced_delay > 0 else 'historical',
-                'timestamp': actual_event_time
-            })
-        
-        # ============================================================
-        # STEP 4.4: Propagate Delay to Downstream Events
-        # ============================================================
-        
-        if total_delay > 0:
-            # Find all events that depend on this one
-            downstream_events = dependencies_df[
-                dependencies_df['upstream_event_id'] == event_id
-            ]
-            
-            if len(downstream_events) > 0:
-                # Get the IDs of affected events
-                affected_ids = downstream_events['downstream_event_id'].values
-                
-                # Propagate delay to all downstream events (vectorized operation)
-                # Only update events that haven't been processed yet
-                mask = (
-                    event_queue['event_id'].isin(affected_ids) & 
-                    (event_queue['scheduled_time'] > actual_event_time)
-                )
-                
-                # Add the delay to downstream events
-                # Use max to ensure we don't reduce existing delays
-                current_delays = event_queue.loc[mask, 'actual_delay']
-                event_queue.loc[mask, 'actual_delay'] = pd.DataFrame({
-                    'current': current_delays,
-                    'new': total_delay
-                }).max(axis=1).values
-        
-        # ============================================================
-        # Record delay summary for analysis
-        # ============================================================
-        
-        if total_delay > 5:  # Only track significant delays
-            delay_summary.append({
-                'event_id': event_id,
-                'asset_id': asset_id,
-                'scheduled_time': scheduled_time,
-                'actual_time': actual_event_time,
-                'delay_minutes': total_delay,
-                'asset_induced': asset_induced_delay,
-                'propagated': propagated_delay,
-                'historical': historical_delay,
-                'downstream_affected': len(downstream_events) if total_delay > 0 else 0
-            })
-    
-    # Create summary DataFrame
-    delay_summary_df = pd.DataFrame(delay_summary)
-    
-    print(f"\nSimulation complete!")
-    print(f"Total delays tracked: {len(delay_summary_df)}")
-    print(f"Total delay minutes: {delay_summary_df['delay_minutes'].sum():.0f}")
-    
-    return event_queue, asset_state, delay_summary_df
+DELAY_THRESHOLD_MIN = 20 # minutes
+PREDICTION_HORIZON_HOURS = 8 # hours
+MAX_DEPENDENCY_DEPTH = 5 # flights
 
 
-# ============================================================
-# Analysis Functions
-# ============================================================
+def build_dependency_graph(flights_dependency_table: pd.DataFrame) -> nx.DiGraph:
+    """
+    Build directed graph from flight dependencies.
+    Optimized for large datasets (490k+ rows).
+    """
+    edges = list(flights_dependency_table[['upstream_event_id', 'downstream_event_id']].itertuples(index=False, name=None))
+    
+    G = nx.DiGraph()
+    G.add_edges_from(edges)
+    
+    return G
 
-def analyze_simulation_results(event_queue, asset_state, delay_summary_df):
-    """
-    Analyze the simulation results for insights.
-    """
-    
-    print("\n" + "="*60)
-    print("SIMULATION ANALYSIS")
-    print("="*60)
-    
-    # 1. Overall delay statistics
-    total_events = len(event_queue)
-    delayed_events = len(event_queue[event_queue['actual_delay'] > 0])
-    
-    print(f"\nOverall Statistics:")
-    print(f"  Total events: {total_events:,}")
-    print(f"  Delayed events: {delayed_events:,} ({delayed_events/total_events*100:.1f}%)")
-    print(f"  Average delay: {event_queue['actual_delay'].mean():.1f} minutes")
-    print(f"  Max delay: {event_queue['actual_delay'].max():.1f} minutes")
-    
-    # 2. Asset utilization analysis
-    print(f"\nAsset Utilization:")
-    for asset_id, state in asset_state.items():
-        utilization_loss = (state['cumulative_delay'] / 60) / state.get('baseline_utilization', 1)
-        print(f"  {asset_id}:")
-        print(f"    Total delay: {state['cumulative_delay']:.0f} minutes")
-        print(f"    Utilization: {state['utilization']:.1f} hours")
-        print(f"    Delay events: {len(state['delay_events'])}")
-    
-    # 3. Delay propagation analysis
-    if len(delay_summary_df) > 0:
-        print(f"\nDelay Propagation:")
-        avg_downstream = delay_summary_df['downstream_affected'].mean()
-        print(f"  Average downstream events affected: {avg_downstream:.1f}")
-        
-        # Top delays
-        top_delays = delay_summary_df.nlargest(5, 'delay_minutes')
-        print(f"\n  Top 5 Delays:")
-        for _, delay in top_delays.iterrows():
-            print(f"    Event {delay['event_id']}: {delay['delay_minutes']:.0f} min "
-                  f"({delay['asset_id']}, affected {delay['downstream_affected']} events)")
-    
+
+def detect_delay(event: pd.Series, scheduled_col: str = 'scheduled_time') -> Optional[float]:
+    """Detect if event delay exceeds threshold."""
+    delay = (event['timestamp'] - event[scheduled_col]).total_seconds() / 60
+    return delay if delay >= DELAY_THRESHOLD_MIN else None
+
+
+def clone_simulation_state(asset_state: Dict, telemetry_index: int) -> Dict:
+    """Create deep copy of simulation state."""
     return {
-        'total_delay_minutes': event_queue['actual_delay'].sum(),
-        'delayed_event_count': delayed_events,
-        'average_delay': event_queue['actual_delay'].mean(),
-        'asset_utilization': {aid: s['utilization'] for aid, s in asset_state.items()}
+        'asset_state': copy.deepcopy(asset_state),
+        'telemetry_index': telemetry_index
     }
 
 
-if __name__ == '__main__':
-    flights_assets_table = 'data/processed/flight_assets_table.csv'
-    flights_events_table = 'data/processed/flight_events_table.csv'
-    flights_dependency_table = 'data/processed/flights_dependency_table.csv'
-    flights_telemetry_table = 'data/processed/telemetry_stream.csv'
+def get_affected_event_ids(
+    event_id: str,
+    dependency_graph: nx.DiGraph,
+    max_depth: int = MAX_DEPENDENCY_DEPTH
+) -> Set[str]:
+    """Get downstream events affected by delay using BFS with depth limit."""
+    affected = set()
+    frontier = [(event_id, 0)]
+    
+    while frontier:
+        current, depth = frontier.pop(0)
+        if depth >= max_depth:
+            continue
+        
+        if current in dependency_graph:
+            for downstream in dependency_graph.successors(current):
+                if downstream not in affected:
+                    affected.add(downstream)
+                    frontier.append((downstream, depth + 1))
+    
+    return affected
 
-    # Usage
-    df_assets, df_events, df_dep = load_and_prepare_data(
-        flights_assets_table,
-        flights_events_table,
-        flights_telemetry_table
+
+def fast_forward_simulation(
+    telemetry_df: pd.DataFrame,
+    cloned_state: Dict,
+    affected_event_ids: Set[str],
+    horizon_hours: float = PREDICTION_HORIZON_HOURS
+) -> Dict:
+    """Simulate future events to predict downstream delay impact."""
+    asset_state = cloned_state['asset_state']
+    start_idx = cloned_state['telemetry_index']
+    start_time = telemetry_df.iloc[start_idx]['timestamp']
+    horizon_end = start_time + timedelta(hours=horizon_hours)
+    
+    total_future_delay = 0.0
+    impacted_events = []
+    event_delays = {}
+    
+    # Pre-filter telemetry for affected events within horizon
+    future_slice = telemetry_df.iloc[start_idx + 1:]
+    mask = (future_slice['timestamp'] <= horizon_end) & (future_slice['event_id'].isin(affected_event_ids))
+    relevant_events = future_slice[mask]
+    
+    for idx, event in relevant_events.iterrows():
+        asset_id = event['asset_id']
+        asset = asset_state[asset_id]
+        
+        # Calculate effective start time considering asset availability
+        effective_start = max(event['scheduled_time'], asset['available_at'])
+        delay_min = (effective_start - event['scheduled_time']).total_seconds() / 60
+        
+        if event['event_type'] == 'DEPARTURE':
+            # If it's a Departure, it's starting a FLIGHT.
+            # It won't be 'available' at the next airport until it flies there.
+            # Duration = Original Scheduled Arrival - Original Scheduled Departure
+            # You should have 'scheduled_arr_utc' or a 'duration' available in your telemetry
+            flight_duration = event['scheduled_arrival_time'] - event['scheduled_time']
+            
+            # The plane is available at the destination after the flight
+            asset['available_at'] = effective_start + flight_duration
+            
+        elif event['event_type'] == 'ARRIVAL':
+            # If it's an Arrival, it's starting a TURNAROUND.
+            # It won't be 'available' for the next flight until serviced.
+            min_turnaround = timedelta(minutes=30) 
+            
+            # The plane is available for the next departure after the 45-min buffer
+            asset['available_at'] = effective_start + min_turnaround
+
+        if delay_min > 0:
+            total_future_delay += delay_min
+            impacted_events.append(event['event_id'])
+            event_delays[event['event_id']] = delay_min
+            
+            asset['cumulative_delay'] += delay_min
+            asset['delay_events'].append(event['event_id'])
+        
+        # Update asset availability based on event duration
+        # Assuming event ends at timestamp (can be adjusted if duration column exists)
+        asset['available_at'] = effective_start
+        asset['last_event_id'] = event['event_id']
+    
+    return {
+        'total_delay': total_future_delay,
+        'impacted_events': impacted_events,
+        'event_delays': event_delays,
+        'num_impacted': len(impacted_events)
+    }
+
+
+def predict_baseline_impact(
+    telemetry_df: pd.DataFrame,
+    asset_state: Dict,
+    dependency_graph: nx.DiGraph,
+    trigger_event: pd.Series,
+    telemetry_index: int
+) -> Optional[Dict]:
+    """Predict downstream impact of a delay trigger event."""
+    delay = detect_delay(trigger_event)
+    if delay is None:
+        return None
+    
+    # Clone current state
+    cloned_state = clone_simulation_state(asset_state, telemetry_index)
+    
+    # Get affected downstream events
+    affected_event_ids = get_affected_event_ids(
+        trigger_event['event_id'],
+        dependency_graph,
+        max_depth=MAX_DEPENDENCY_DEPTH
     )
+    
+    # Fast-forward simulation on cloned state
+    baseline_result = fast_forward_simulation(
+        telemetry_df,
+        cloned_state,
+        affected_event_ids,
+        horizon_hours=PREDICTION_HORIZON_HOURS
+    )
+    
+    # Add trigger information
+    baseline_result['trigger_event_id'] = trigger_event['event_id']
+    baseline_result['trigger_delay'] = delay
+    baseline_result['trigger_timestamp'] = trigger_event['timestamp']
+    baseline_result['affected_event_count'] = len(affected_event_ids)
+    
+    return baseline_result
 
 
-    # Step 3: Initialize
-    asset_state, event_queue, dependencies_df = initialize_simulation(
+def run_simulation(
+    telemetry_df: pd.DataFrame,
+    asset_df: pd.DataFrame,
+    flights_dependency_table: pd.DataFrame,
+    delay_threshold_min: float = DELAY_THRESHOLD_MIN,
+    prediction_horizon_hours: float = PREDICTION_HORIZON_HOURS,
+    max_dependency_depth: int = MAX_DEPENDENCY_DEPTH
+) -> Tuple[pd.DataFrame, Dict]:
+    """
+    Run full simulation with delay detection and impact prediction.
+    
+    Returns:
+        - predictions_df: DataFrame with all delay predictions
+        - final_asset_state: Final state of all assets
+    """
+    global DELAY_THRESHOLD_MIN, PREDICTION_HORIZON_HOURS, MAX_DEPENDENCY_DEPTH
+    DELAY_THRESHOLD_MIN = delay_threshold_min
+    PREDICTION_HORIZON_HOURS = prediction_horizon_hours
+    MAX_DEPENDENCY_DEPTH = max_dependency_depth
+    TURNAROUND_MINUTES = 30
+    # Sort telemetry by timestamp
+    telemetry_df = telemetry_df.sort_values('timestamp').reset_index(drop=True)
+    
+    # Initialize
+    asset_state = initialize_asset_states(asset_df, telemetry_df)
+    dependency_graph = build_dependency_graph(flights_dependency_table)
+    
+    predictions = []
+    
+    # Process telemetry stream
+    for idx, event in telemetry_df.iterrows():
+        asset_id = event['asset_id']
+        asset = asset_state[asset_id]
+        
+        event_type = event['event_type'].upper()
+    
+        if event_type == 'DEPARTURE':
+            asset['current_flight'] = event['flight_number']
+            asset['last_departure_time'] = event['timestamp']
+            
+        elif event_type == 'ARRIVAL':
+            # Aircraft arrives - becomes available after turnaround
+            turnaround_delta = timedelta(minutes=TURNAROUND_MINUTES)
+            asset['available_at'] = event['timestamp'] + turnaround_delta
+            asset['current_flight'] = None  # Flight completed
+            asset['total_flight_time'] = asset['total_flight_time'] + (event['timestamp'] - asset['last_departure_time'])
+            asset['number_of_flights'] += 1
+
+        else:
+            raise ValueError('Unknown Event Type in Telemetry Data')
+        
+        # Check for delay trigger
+        prediction = predict_baseline_impact(
+            telemetry_df,
+            asset_state,
+            dependency_graph,
+            event,
+            idx
+        )
+        
+        if prediction is not None:
+            predictions.append(prediction)
+    
+    # Convert predictions to DataFrame
+    if predictions:
+        predictions_df = pd.DataFrame(predictions)
+    else:
+        predictions_df = pd.DataFrame(columns=[
+            'trigger_event_id', 'trigger_delay', 'trigger_timestamp',
+            'total_delay', 'impacted_events', 'num_impacted',
+            'affected_event_count', 'event_delays'
+        ])
+    
+    return predictions_df, asset_state
+
+
+def main():
+    """Main execution function."""
+    # Load data
+    print("Loading data...")
+    telemetry_file = 'data/processed/telemetry_stream.csv'
+    dependency_graph = 'data/processed/flights_dependency_table.csv'
+    flights_assets_file = 'data/processed/flight_assets_table.csv'
+    flights_events_file = 'data/processed/'
+    
+    # Convert timestamp columns to datetime
+    df_assets, df_telemetry, df_dependency = load_and_prepare_data(
+        flights_assets_file,
+        telemetry_file,
+        dependency_graph
+    )
+    
+    # Run simulation
+    print("Running simulation...")
+    predictions_df, final_asset_state = run_simulation(
+        df_telemetry,
         df_assets,
-        df_events,
-        df_dep
+        df_dependency,
+        delay_threshold_min=20,
+        prediction_horizon_hours=3,
+        max_dependency_depth=3
     )
+    
+    # Save results
+    print(f"Simulation complete. Found {len(predictions_df)} delay triggers.")
+    predictions_df.to_csv('delay_predictions.csv', index=False)
+    
+    # Summary statistics
+    if len(predictions_df) > 0:
+        print(f"\nSummary Statistics:")
+        print(f"Total delay triggers: {len(predictions_df)}")
+        print(f"Average downstream delay per trigger: {predictions_df['total_delay'].mean():.2f} minutes")
+        print(f"Average events impacted per trigger: {predictions_df['num_impacted'].mean():.2f}")
+        print(f"Total predicted downstream delay: {predictions_df['total_delay'].sum():.2f} minutes")
+    
+    return predictions_df, final_asset_state
 
-    # Step 4: Run simulation
-    updated_events, updated_assets, delay_summary = run_event_simulation(
-        asset_state=asset_state,
-        event_queue=event_queue,
-        dependencies_df=dependencies_df,
-        turnaround_time_minutes=30
-    )
 
-    # Analyze results
-    results = analyze_simulation_results(updated_events, updated_assets, delay_summary)
+if __name__ == "__main__":
+    predictions_df, final_asset_state = main()
