@@ -242,7 +242,9 @@ def clean_and_convert_times(df, airport_lookup_file, output_file):
         airport_tz_dict,
         'arrival'
     )
-    
+    # remove instances where flights are rebooked and show up twice in our dataset
+    df = remove_impossible_overlaps(df)
+
     # Step 7: Calculate delay columns
     print("\nCalculating delays...")
     df['dep_delay_minutes'] = (df['actual_dep_utc'] - df['scheduled_dep_utc']).dt.total_seconds() / 60
@@ -282,6 +284,24 @@ def clean_and_convert_times(df, airport_lookup_file, output_file):
     
     return df
 
+def remove_impossible_overlaps(df):
+    # Sort by asset and time
+    df = df.sort_values(['TAIL_NUM', 'scheduled_dep_utc'])
+    
+    # 1. Drop exact duplicates (same plane, same time, same flight)
+    df = df.drop_duplicates(subset=['TAIL_NUM', 'scheduled_dep_utc'])
+    
+    # 2. Drop "Impossible" overlaps 
+    # (Where a plane's next departure is before its previous arrival)
+    # We use shift to compare the previous arrival time to the current departure
+    df['prev_arr_utc'] = df.groupby('TAIL_NUM')['scheduled_arr_utc'].shift(1)
+    
+    # A flight is 'impossible' if it starts before the last one ended
+    # We give it a 10-minute buffer for safety
+    is_impossible = (df['scheduled_dep_utc'] < df['prev_arr_utc'])
+    
+    print(f"Removing {is_impossible.sum()} impossible overlapping flights...")
+    return df[~is_impossible].drop(columns=['prev_arr_utc'])
 
 def convert_to_utc(datetime_series, airport_id_series, airport_tz_dict, event_type):
     """
