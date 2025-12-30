@@ -1,5 +1,6 @@
 import pandas as pd
 from datetime import datetime
+import numpy as np
 
 def create_telemetry_stream(flight_events_df):
     """
@@ -33,7 +34,12 @@ def create_telemetry_stream(flight_events_df):
             'carrier': row['carrier'],
             'flight_number': row['flight_number'],
             'origin': row['origin'],
-            'destination': row['destination']
+            'destination': row['destination'],
+            'CARRIER_DELAY': False if np.isnan(row['CARRIER_DELAY']) else True,
+            'WEATHER_DELAY': False if np.isnan(row['WEATHER_DELAY']) else True,
+            'NAS_DELAY': False if np.isnan(row['NAS_DELAY']) else True,
+            'SECURITY_DELAY': False if np.isnan(row['SECURITY_DELAY']) else True,
+            'LATE_AIRCRAFT_DELAY': False if np.isnan(row['LATE_AIRCRAFT_DELAY']) else True
         }
         
         telemetry_emissions.append(actual_emission)
