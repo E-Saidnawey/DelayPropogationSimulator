@@ -1,164 +1,87 @@
 import pandas as pd
 from datetime import datetime, timedelta
+import numpy as np
 
-def load_and_prepare_data(assets_path, telemetry_stream):
+def load_and_prepare_data(assets_path, telemetry_path, dependencies_path):
     """
-    Load data and ensure correct data types.
+    Load data, ensure types, and PRE-CALCULATE flight durations.
     """
-    
-    # Load assets
+    # 1. Load raw data
     df_assets = pd.read_csv(assets_path)
-    
-    # Convert numeric columns to float
-    numeric_cols = ['avg_flights_per_day', 'avg_hours_per_day', 'total_flight_time']
+    df_events = pd.read_csv(telemetry_path)
+    df_deps = pd.read_csv(dependencies_path)
+
+    # 2. Type conversions
+    numeric_cols = ['avg_flights_per_day', 'avg_hours_per_day', 'total_flight_time', 'total_flights']
     for col in numeric_cols:
         if col in df_assets.columns:
             df_assets[col] = pd.to_numeric(df_assets[col], errors='coerce').fillna(0.0)
-    
-    # Load events
-    df_events = pd.read_csv(telemetry_stream)
-    
-    # Convert datetime columns
-    date_format = '%m/%d/%Y %I:%M:%S %p'
-    datetime_cols = ['timestamp', 'flight_date']
+
+    datetime_cols = ['scheduled_time', 'timestamp']
     for col in datetime_cols:
         if col in df_events.columns:
-            df_events[col] = pd.to_datetime(df_events[col], format=)
+            df_events[col] = pd.to_datetime(df_events[col], utc=True)
+
+    # 3. ENRICHMENT: Calculate Scheduled Flight Durations
+    # We merge the events table with itself to find the Arrival time for every Departure
+    # This assumes 'event_id' and 'downstream_event_id' are reliable from your dependency table
+    print("Enriching telemetry with flight durations...")
     
-    return df_assets, df_events
+    # Map upstream (Dep) -> downstream (Arr)
+    flight_legs = df_deps[df_deps['dependency_type'] == 'FLIGHT_LEG'][['upstream_event_id', 'downstream_event_id']]
+    
+    # Join to get the Scheduled Time of the downstream Arrival
+    events_sched = df_events[['event_id', 'scheduled_time']].set_index('event_id')
+    
+    flight_durations = flight_legs.merge(
+        events_sched, 
+        left_on='downstream_event_id', 
+        right_index=True,
+        suffixes=('', '_arr')
+    ).merge(
+        events_sched,
+        left_on='upstream_event_id',
+        right_index=True,
+        suffixes=('_arr', '_dep')
+    )
+    
+    # Calculate duration
+    flight_durations['scheduled_duration'] = flight_durations['scheduled_time_arr'] - flight_durations['scheduled_time_dep']
+    
+    # Map back to the main events dataframe
+    duration_map = flight_durations.set_index('upstream_event_id')['scheduled_duration']
+    df_events['scheduled_duration'] = df_events['event_id'].map(duration_map)
+
+    # Fill NaT for Arrivals (they don't have a flight duration, they have a turnaround)
+    df_events['scheduled_duration'] = df_events['scheduled_duration'].fillna(pd.Timedelta(seconds=0))
+
+    return df_assets, df_events, df_deps
 
 
 def initialize_asset_states(flight_assets_df, flight_events_df):
     """
-    Initialize asset state tracking for simulation.
-    
-    Parameters:
-    -----------
-    flight_assets_df : DataFrame with columns [TAIL_NUM, avg_flights_per_day, 
-                       avg_hours_per_day, total_flight_time]
-    flight_events_df : DataFrame with flight events to find first scheduled time
-    
-    Returns:
-    --------
-    dict : asset_state dictionary ready for simulation
+    Fastest version using dictionary comprehension.
     """
+    print("Initializing asset states...")
     
-    asset_state = {}
+    # Pre-calculate first scheduled times
+    first_times = flight_events_df.groupby('asset_id')['scheduled_time'].min().to_dict()
+    global_min_time = flight_events_df['scheduled_time'].min()
     
-    # For each aircraft in the fleet
-    for _, row in flight_assets_df.iterrows():
-        tail_num = row['TAIL_NUM']
-        
-        # Find the first scheduled event for this aircraft
-        asset_events = flight_events_df[flight_events_df['asset_id'] == tail_num]
-        
-        if len(asset_events) > 0:
-            # Get the earliest scheduled time for this asset
-            first_scheduled = asset_events['scheduled_time'].min()
-        else:
-            # Default to earliest time in entire dataset if no events found
-            first_scheduled = flight_events_df['scheduled_time'].min()
-        
-        # Initialize state tracking
-        asset_state[tail_num] = {
-            "available_at": first_scheduled,  # When aircraft becomes available
-            "cumulative_delay": 0,             # Total delay accumulated (minutes)
-            "utilization": 0,                  # Total flight time used (hours)
-            
-            # Additional metrics for Step 4 simulation
-            "current_flight": None,            # Track current flight assignment
-            "delay_events": [],                # History of delay events
-            "baseline_utilization": row['avg_hours_per_day'],  # Expected daily hours
-            "total_flight_time": row['total_flight_time']      # Historical total
+    assets_dict = flight_assets_df.set_index('TAIL_NUM').to_dict('index')
+    
+    # Initialize state dict
+    asset_state = {
+        tail_num: {
+            "available_at": first_times.get(tail_num, global_min_time),
+            "cumulative_delay": 0.0,
+            "current_flight": None,
+            "delay_events": [],
+            "number_of_flights": 0,
+            "last_departure_time": first_times.get(tail_num, global_min_time)
         }
+        for tail_num in assets_dict.keys()
+    }
     
+    print(f"Initialized {len(asset_state)} assets")
     return asset_state
-
-
-def get_asset_availability_window(asset_state, asset_id, scheduled_time, 
-                                   turnaround_time=timedelta(minutes=30)):
-    """
-    Helper function for Step 4: Check if asset is available at scheduled time.
-    
-    Parameters:
-    -----------
-    asset_state : dict
-    asset_id : str (TAIL_NUM)
-    scheduled_time : datetime
-    turnaround_time : timedelta, minimum ground time between flights
-    
-    Returns:
-    --------
-    tuple : (is_available: bool, delay_needed: timedelta)
-    """
-    
-    available_at = asset_state[asset_id]["available_at"]
-    required_ready = scheduled_time - turnaround_time
-    
-    if available_at <= required_ready:
-        return True, timedelta(0)
-    else:
-        delay_needed = available_at - scheduled_time
-        return False, delay_needed
-
-def initialize_simulation(flight_assets_df, flight_events_df):
-    """
-    Efficient initialization without building full dependency graph.
-    
-    """
-    
-    # 1. Initialize asset states (this loop is fine - only dozens/hundreds of aircraft)
-    asset_state = initialize_asset_states(flight_assets_df, flight_events_df)
-    
-    # 2. Create sorted event queue
-    event_queue = flight_events_df.sort_values('scheduled_time').copy()
-    event_queue['processed'] = False
-    event_queue['actual_delay'] = 0
-    event_queue['propagated_delay'] = 0  # Track delays from upstream events
-    
-    
-    return asset_state, event_queue
-
-# Preparation for Simulation 
-def prepare_for_simulation(flight_assets_table, flight_events_table):
-    """
-    Complete Initialization Setup.
-    """
-    
-    print("=== Initializing Asset States ===")
-    
-    # Initialize
-    asset_state, event_queue = initialize_simulation(
-        flight_assets_table, 
-        flight_events_table
-    )
-    
-    # Validation
-    print(f"✓ Initialized {len(asset_state)} aircraft")
-    print(f"✓ Created event queue with {len(event_queue)} events")
-    
-    # Summary statistics
-    print("\nAsset State Summary:")
-    for tail_num, state in list(asset_state.items())[:3]:  # Show first 3
-        print(f"  {tail_num}:")
-        print(f"    Available at: {state['available_at']}")
-        print(f"    Baseline utilization: {state['baseline_utilization']:.2f} hrs/day")
-    
-    return asset_state, event_queue
-
-
-
-
-if __name__ == '__main__':
-    flights_assets_table = 'data/processed/flight_assets_table.csv'
-    flights_events_table = 'data/processed/flight_events_table.csv'
-
-    # Usage
-    df_assets, df_events = load_and_prepare_data(
-        flights_assets_table,
-        flights_events_table
-    )
-
-    asset_state, event_queue = prepare_for_simulation(
-        df_assets, df_events
-    )

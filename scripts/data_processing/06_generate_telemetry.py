@@ -36,7 +36,6 @@ def create_telemetry_stream(flight_events_df):
             'destination': row['destination']
         }
         
-        telemetry_emissions.append(scheduled_emission)
         telemetry_emissions.append(actual_emission)
     
     # Sort globally by timestamp

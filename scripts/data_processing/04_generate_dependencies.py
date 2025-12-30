@@ -2,84 +2,34 @@ import pandas as pd
 
 
 def generate_dependencies_table(events_table):
-    dependencies = []
-    
-    # Sort events by asset and scheduled time
+    events_table['scheduled_time'] = pd.to_datetime(events_table['scheduled_time'])
     sorted_events = events_table.sort_values(['asset_id', 'scheduled_time'])
     
-    # Group by asset
-    for asset_id, asset_events in sorted_events.groupby('asset_id'):
-        # Separate arrivals and departures
-        arrivals = asset_events[asset_events['event_type'] == 'ARRIVAL'].copy()
-        departures = asset_events[asset_events['event_type'] == 'DEPARTURE'].copy()
-        
-        if arrivals.empty or departures.empty:
-            continue
-        
-
-        arrivals = arrivals.rename(columns={'scheduled_time': 'scheduled_time_arrival'})
-        departures = departures.rename(columns={'scheduled_time': 'scheduled_time_departure'})
-        
-        # Use merge_asof to match each arrival with the next departure
-        matched = pd.merge_asof(
-            arrivals,
-            departures,
-            left_on='scheduled_time_arrival',
-            right_on='scheduled_time_departure',
-            by='asset_id',
-            direction='forward',
-            suffixes=('_arrival', '_departure')
-        )
-
-        matched['scheduled_time_departure'] = pd.to_datetime(matched['scheduled_time_departure'])
-        matched['scheduled_time_arrival'] = pd.to_datetime(matched['scheduled_time_arrival'])
-        
-
-        # Filter out matches where departure is too far in the future (>24 hours)
-        matched['time_diff_hours'] = (
-            matched['scheduled_time_departure'] - 
-            matched['scheduled_time_arrival']
-        ).dt.total_seconds() / 3600
-        
-        valid_matches = matched[matched['time_diff_hours'] < 24].copy()
-        
-        # Calculate scheduled separation in minutes
-        valid_matches['scheduled_separation_minutes'] = (
-            valid_matches['scheduled_time_departure'] - 
-            valid_matches['scheduled_time_arrival']
-        ).dt.total_seconds() / 60
-        
-        # Add other fields
-        valid_matches['min_separation_minutes'] = 45
-        valid_matches['dependency_type'] = 'AIRCRAFT_TURNAROUND'
-        
-        dependencies.append(valid_matches)
+    # Get the previous event info
+    sorted_events['upstream_event_id'] = sorted_events.groupby('asset_id')['event_id'].shift(1)
+    sorted_events['upstream_event_type'] = sorted_events.groupby('asset_id')['event_type'].shift(1)
     
-    # Combine all dependencies
-    if dependencies:
-        all_deps = pd.concat(dependencies, ignore_index=True)
-        
-        # Create dependency IDs
-        all_deps['dependency_id'] = [
-            f"DEP_{str(i+1).zfill(8)}" 
-            for i in range(len(all_deps))
-        ]
-        
-        # Select and rename columns as needed
-        result = all_deps[[
-            'dependency_id',
-            'event_id_arrival',  # rename to upstream_event_id
-            'event_id_departure',  # rename to downstream_event_id
-            # ... other columns
-        ]].rename(columns={
-            'event_id_arrival': 'upstream_event_id',
-            'event_id_departure': 'downstream_event_id',
-            # ...
-        })
-        
-        return result
-    else:
-        return pd.DataFrame()
+    # 1. Capture ALL sequential dependencies for the same asset
+    dependencies = sorted_events.dropna(subset=['upstream_event_id']).copy()
+    
+    # 2. Categorize them so the simulator knows how to handle the time
+    def categorize(row):
+        if row['upstream_event_type'] == 'DEPARTURE' and row['event_type'] == 'ARRIVAL':
+            return 'FLIGHT_LEG'
+        if row['upstream_event_type'] == 'ARRIVAL' and row['event_type'] == 'DEPARTURE':
+            return 'AIRCRAFT_TURNAROUND'
+        return 'OTHER'
+
+    dependencies['dependency_type'] = dependencies.apply(categorize, axis=1)
+    
+    # 3. Cleanup and format
+    dependencies = dependencies.rename(columns={'event_id': 'downstream_event_id'})
+    dependencies['dependency_id'] = [f"DEP_{str(i+1).zfill(8)}" for i in range(len(dependencies))]
+    
+    return dependencies[[
+        'dependency_id', 'upstream_event_id', 'downstream_event_id', 
+        'asset_id', 'dependency_type'
+    ]]
 
 if __name__ == '__main__':
     # File paths - UPDATE THESE
