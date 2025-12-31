@@ -1,5 +1,11 @@
 *.csv
 *.txt
+.vscode/
+archive/
+*.pkl
+*.png
+*.json
+*.html
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

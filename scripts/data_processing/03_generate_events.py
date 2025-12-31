@@ -34,6 +34,11 @@ def generate_events_table(cleaned_data):
         'flight_number': cleaned_data['MKT_CARRIER_FL_NUM'],
         'origin': cleaned_data['ORIGIN_AIRPORT_ID'],
         'destination': cleaned_data['DEST_AIRPORT_ID'],
+        'CARRIER_DELAY': cleaned_data['CARRIER_DELAY'],
+        'WEATHER_DELAY': cleaned_data['WEATHER_DELAY'],
+        'NAS_DELAY': cleaned_data['NAS_DELAY'],
+        'SECURITY_DELAY': cleaned_data['SECURITY_DELAY'],
+        'LATE_AIRCRAFT_DELAY': cleaned_data['LATE_AIRCRAFT_DELAY']
     })
 
     # Create arrival events
@@ -47,7 +52,12 @@ def generate_events_table(cleaned_data):
         'carrier': cleaned_data['OP_UNIQUE_CARRIER'],
         'flight_number': cleaned_data['MKT_CARRIER_FL_NUM'],
         'origin': cleaned_data['ORIGIN_AIRPORT_ID'],
-        'destination': cleaned_data['DEST_AIRPORT_ID']
+        'destination': cleaned_data['DEST_AIRPORT_ID'],
+        'CARRIER_DELAY': cleaned_data['CARRIER_DELAY'],
+        'WEATHER_DELAY': cleaned_data['WEATHER_DELAY'],
+        'NAS_DELAY': cleaned_data['NAS_DELAY'],
+        'SECURITY_DELAY': cleaned_data['SECURITY_DELAY'],
+        'LATE_AIRCRAFT_DELAY': cleaned_data['LATE_AIRCRAFT_DELAY']
     })
     
     # Concatenate

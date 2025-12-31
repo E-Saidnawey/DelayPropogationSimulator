@@ -11,6 +11,12 @@ def load_and_prepare_data(assets_path, telemetry_path, dependencies_path):
     df_events = pd.read_csv(telemetry_path)
     df_deps = pd.read_csv(dependencies_path)
 
+    df_events=df_events.drop(columns=['CARRIER_DELAY',
+                                      'WEATHER_DELAY',
+                                      'NAS_DELAY',
+                                      'SECURITY_DELAY',
+                                      'LATE_AIRCRAFT_DELAY']) # remove columns not needed for simulation. These are used as binary in the ML
+
     # 2. Type conversions
     numeric_cols = ['avg_flights_per_day', 'avg_hours_per_day', 'total_flight_time', 'total_flights']
     for col in numeric_cols:
