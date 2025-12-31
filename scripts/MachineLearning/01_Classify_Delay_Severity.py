@@ -340,7 +340,7 @@ def evaluate_model(model, X_scaled, y_true, dataset_name):
     return y_pred, y_proba, roc_auc
 
 
-def plot_confusion_matrix(y_true, y_pred, filename='confusion_matrix.png'):
+def plot_confusion_matrix(y_true, y_pred, filename='results/MachineLearning/confusion_matrix.png'):
     """Plot and save confusion matrix."""
     cm = confusion_matrix(y_true, y_pred)
     plt.figure(figsize=(8, 6))
@@ -353,7 +353,7 @@ def plot_confusion_matrix(y_true, y_pred, filename='confusion_matrix.png'):
     print(f"\nConfusion matrix saved to '{filename}'")
 
 
-def plot_roc_curve(y_true, y_proba, filename='roc_curve.png'):
+def plot_roc_curve(y_true, y_proba, filename='results/MachineLearning/roc_curve.png'):
     """Plot and save ROC curve."""
     fpr, tpr, thresholds = roc_curve(y_true, y_proba)
     roc_auc = roc_auc_score(y_true, y_proba)
@@ -371,7 +371,7 @@ def plot_roc_curve(y_true, y_proba, filename='roc_curve.png'):
     print(f"ROC curve saved to '{filename}'")
 
 
-def analyze_feature_importance(model, feature_columns, filename='feature_importance.png'):
+def analyze_feature_importance(model, feature_columns, filename='results/MachineLearning/feature_importance.png'):
     """Analyze and plot feature importance."""
     feature_importance = pd.DataFrame({
         'feature': feature_columns,
@@ -393,18 +393,21 @@ def analyze_feature_importance(model, feature_columns, filename='feature_importa
     print(f"\nFeature importance plot saved to '{filename}'")
 
 
-def save_model_artifacts(model, scaler, feature_columns):
-    """Save trained model, scaler, and feature list."""
+def save_model_artifacts(model, scaler, feature_columns, model_metadata):
+    """Save trained model, scaler, feature list, and metadata."""
     with open('cascade_classifier_model.pkl', 'wb') as f:
         pickle.dump(model, f)
     with open('cascade_classifier_scaler.pkl', 'wb') as f:
         pickle.dump(scaler, f)
     with open('cascade_classifier_features.pkl', 'wb') as f:
         pickle.dump(feature_columns, f)
+    with open('cascade_classifier_metadata.pkl', 'wb') as f:
+        pickle.dump(model_metadata, f)
     
     print("\nModel saved to 'cascade_classifier_model.pkl'")
     print("Scaler saved to 'cascade_classifier_scaler.pkl'")
     print("Features saved to 'cascade_classifier_features.pkl'")
+    print("Metadata saved to 'cascade_classifier_metadata.pkl'")
 
 
 def main():
@@ -452,11 +455,30 @@ def main():
     plot_roc_curve(y_test, y_test_proba)
     analyze_feature_importance(model, feature_columns)
     
-    # Save model artifacts
-    save_model_artifacts(model, scaler, feature_columns)
+    model_metadata = {
+        'n_train': len(X_train),
+        'n_val': len(X_val),
+        'n_test': len(X_test),
+        'n_total': len(X_train) + len(X_val) + len(X_test),
+        'cascade_pct_train': float(y_train.sum() / len(y_train) * 100),
+        'cascade_pct_val': float(y_val.sum() / len(y_val) * 100),
+        'cascade_pct_test': float(y_test.sum() / len(y_test) * 100),
+        'n_features': len(feature_columns),
+        'training_date': datetime.now().isoformat(),
+        'threshold': 1  # Your cascade threshold
+    }
+    
+    # Save model artifacts with metadata
+    save_model_artifacts(model, scaler, feature_columns, model_metadata)
     
     print("\nTraining complete!")
 
+    test_results = pd.DataFrame({
+        'y_true': y_test,
+        'y_pred': y_test_pred,
+        'y_proba': y_test_proba
+    })
+    test_results.to_csv('results/MachineLearning/test_results.csv', index=False)
 
 if __name__ == "__main__":
     main()
