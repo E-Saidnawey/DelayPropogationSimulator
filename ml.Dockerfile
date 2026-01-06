@@ -8,13 +8,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
-COPY scripts/MachineLearning/requirements.txt ./
+COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt --break-system-packages
 
 # Copy ML code and models
 COPY scripts/MachineLearning/ ./
-COPY models/ ./models/
-COPY data/processed/ ./data/processed/
+COPY app/models/ ./app/models
 
 EXPOSE 8001
 
