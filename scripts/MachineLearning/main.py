@@ -169,90 +169,50 @@ async def health():
 
 @app.post("/predict", response_model=PredictionResponse)
 async def predict_cascade(flight: FlightUpdate):
-    """
-    Predict cascade probability for a delayed flight
-    Only call this for flights with delays
-    
-    Uses rule-based deterministic logic for obvious cascades,
-    falls back to ML model for ambiguous cases.
-    """
     if MODEL is None or SCALER is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
     
     try:
-        # RULE 1: Severe delays (>120 min) are almost certain cascades
-        if flight.current_delay_minutes >= 120:
-            return PredictionResponse(
-                flight_number=flight.flight_number,
-                carrier=flight.carrier,
-                cascade_probability=0.95,
-                risk_level="High",
-                current_delay=flight.current_delay_minutes,
-                confidence=1.0
-            )
+        # --- FIX FOR ISSUE 1 & 2: DYNAMIC PROBABILITY SCALING ---
         
-        # RULE 2: Very large delays (>90 min) are very likely cascades
-        if flight.current_delay_minutes >= 90:
-            return PredictionResponse(
-                flight_number=flight.flight_number,
-                carrier=flight.carrier,
-                cascade_probability=0.85,
-                risk_level="High",
-                current_delay=flight.current_delay_minutes,
-                confidence=0.9
-            )
-        
-        # RULE 3: Large delays (>60 min) are likely cascades
-        if flight.current_delay_minutes >= 60:
-            # Use ML but boost probability
-            features = engineer_features(flight)
-            X = align_features_with_training(features)
-            X_scaled = SCALER.transform(X)
-            ml_proba = MODEL.predict_proba(X_scaled)[0, 1]
-            
-            # Boost ML prediction for large delays
-            boosted_proba = min(0.95, ml_proba * 1.3)
-            
-            risk_level = "High" if boosted_proba >= 0.6 else "Medium"
-            confidence = abs(boosted_proba - 0.5) * 2
-            
-            return PredictionResponse(
-                flight_number=flight.flight_number,
-                carrier=flight.carrier,
-                cascade_probability=float(boosted_proba),
-                risk_level=risk_level,
-                current_delay=flight.current_delay_minutes,
-                confidence=float(confidence)
-            )
-        
-        # RULE 4: Moderate-severe delays (30-60 min) - use pure ML
-        # Engineer features
+        # Base probability from model (if loaded)
         features = engineer_features(flight)
-        
-        # Align with training features
         X = align_features_with_training(features)
-        
-        # Scale features
         X_scaled = SCALER.transform(X)
+        ml_proba = MODEL.predict_proba(X_scaled)[0, 1]
+
+        # Calculate a "Delay Factor" (sigmoid-like curve based on delay minutes)
+        # This ensures probability grows dynamically with delay, not just at hard stops
+        delay_factor = min(1.0, max(0.0, (flight.current_delay_minutes - 15) / 100))
         
-        # Get prediction
-        proba = MODEL.predict_proba(X_scaled)[0, 1]  # Probability of cascade class
+        # Weighted ensemble: 
+        # For small delays (15-30m), trust ML more (30% weight to delay).
+        # For large delays (>60m), trust delay magnitude more (80% weight to delay).
+        weight_delay = min(0.9, max(0.2, flight.current_delay_minutes / 100))
         
-        # Determine risk level
-        if proba < 0.3:
+        final_proba = (ml_proba * (1 - weight_delay)) + (delay_factor * weight_delay)
+
+        # Force High Risk for severe delays (Overriding ML if it's "confused")
+        if flight.current_delay_minutes >= 75:
+            final_proba = max(final_proba, 0.85)
+        elif flight.current_delay_minutes >= 45:
+            final_proba = max(final_proba, 0.60)
+
+        # Determine Risk Level dynamically
+        if final_proba < 0.35:
             risk_level = "Low"
-        elif proba < 0.6:
+        elif final_proba < 0.70:
             risk_level = "Medium"
         else:
             risk_level = "High"
-        
-        # Confidence based on how far from decision boundary
-        confidence = abs(proba - 0.5) * 2  # 0 at boundary, 1 at extremes
-        
+
+        # Calculate confidence
+        confidence = abs(final_proba - 0.5) * 2
+
         return PredictionResponse(
             flight_number=flight.flight_number,
             carrier=flight.carrier,
-            cascade_probability=float(proba),
+            cascade_probability=float(final_proba),
             risk_level=risk_level,
             current_delay=flight.current_delay_minutes,
             confidence=float(confidence)
@@ -279,4 +239,9 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    import os
+    
+    # Get port from environment variable, default to 8000
+    port = int(os.getenv("PORT", "8000"))
+    host = os.getenv('HOST', 'localhost')
+    uvicorn.run(app, host=host, port=port)

@@ -11,7 +11,8 @@ import json
 from pathlib import Path
 
 
-def load_and_prepare_flights(flights_csv: str) -> pd.DataFrame:
+
+def load_and_prepare_flights(flights_csv: str, sample_size: int = 20000) -> pd.DataFrame:
     """
     Load flight data from CSV and prepare it for telemetry generation
     
@@ -22,7 +23,28 @@ def load_and_prepare_flights(flights_csv: str) -> pd.DataFrame:
         Prepared DataFrame with datetime columns and filled delays
     """
     flights = pd.read_csv(flights_csv)
+
+    # filter for flights with ICAO code
+    airport_mapping = pd.read_csv('data/airport_mapping_complete.csv')
+    airport_mapping = airport_mapping.replace('NOT_FOUND', np.nan).dropna(subset=['ICAO_CODE'])
+
+    airport_mapping['ICAO_CODE'] = airport_mapping['ICAO_CODE'].astype(str).str.strip().str.slice(start=1)
+    id_to_icao = dict(zip(airport_mapping['AIRPORT_ID'], airport_mapping['ICAO_CODE']))
     
+    flights['ORIGIN_AIRPORT_ID'] = flights['ORIGIN_AIRPORT_ID'].map(id_to_icao)
+    flights['DEST_AIRPORT_ID']   = flights['DEST_AIRPORT_ID'].map(id_to_icao)
+
+    # Drop any rows that failed mapping (extra safety)
+    flights = flights.dropna(subset=['ORIGIN_AIRPORT_ID', 'DEST_AIRPORT_ID'])
+
+    mask = flights['OP_UNIQUE_CARRIER'].isin(['DL', 'AA', 'B6', 'UA'])
+    flights = flights[mask]
+
+    # Randomly sample flights
+    if len(flights) > sample_size:
+        flights = flights.sample(n=sample_size, random_state=42)
+        print(f"Randomly sampled {sample_size} flights from {len(flights)} total")
+
     # Convert to datetime
     flights['scheduled_dep_utc'] = pd.to_datetime(flights['scheduled_dep_utc'])
     flights['actual_dep_utc'] = pd.to_datetime(flights['actual_dep_utc'])
@@ -282,7 +304,7 @@ def main():
     """Generate sample telemetry stream"""
     
     flights_csv = 'data/processed/flights_cleaned_us_only.csv'
-    start_date = '2024-1-1'
+    start_date = '2025-1-1'
     
     print(f"Generating telemetry stream from {flights_csv}")
     
@@ -290,10 +312,11 @@ def main():
     flights_df = load_and_prepare_flights(flights_csv)
     
     # Generate telemetry stream
-    updates = generate_telemetry_stream(flights_df, start_date)
+    hours = 24 * 16 #24 hours x 21 days (3 weeks)
+    updates = generate_telemetry_stream(flights_df, start_date, hours=hours)
     
     # Save to file
-    output_path = Path('telemetry-dashboard/backend/telemetry_stream.json')
+    output_path = Path('backend/telemetry_stream.json')
     output_path.parent.mkdir(parents=True, exist_ok=True)
     save_telemetry_stream(updates, str(output_path))
     

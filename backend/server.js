@@ -9,6 +9,7 @@ const socketIo = require('socket.io');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const readline = require('readline');
 
 const app = express();
 const server = http.createServer(app);
@@ -23,7 +24,9 @@ const io = socketIo(server, {
 const PORT = process.env.PORT || 3001;
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 const REPLAY_SPEED = parseInt(process.env.REPLAY_SPEED) || 60; // Simulated minutes per real second
-const TELEMETRY_FILE = process.env.TELEMETRY_FILE || './telemetry_stream.json';
+const TELEMETRY_FILE = process.env.TELEMETRY_FILE || './backend/telemetry_stream.json';
+const AIRPORT_MAPPING_FILE = './data/airport_mapping_complete.csv';
+let airportMap = new Map(); // Store ID -> Code
 
 // State
 let telemetryData = [];
@@ -33,14 +36,61 @@ let startTime = null;
 let simulatedStartTime = null;
 let activeFlights = new Map(); // flight_number -> flight data
 
+async function loadAirportMappings() {
+  try {
+    if (!fs.existsSync(AIRPORT_MAPPING_FILE)) {
+      console.warn('⚠️ Airport mapping file not found. Using IDs.');
+      return;
+    }
+
+    const fileStream = fs.createReadStream(AIRPORT_MAPPING_FILE);
+    const rl = readline.createInterface({
+      input: fileStream,
+      crlfDelay: Infinity
+    });
+
+    let isHeader = true;
+    for await (const line of rl) {
+      if (isHeader) { isHeader = false; continue; }
+      
+      // Parse CSV line (assuming simple CSV without quoted commas for now)
+      const cols = line.split(',');
+      if (cols.length >= 3) {
+        const id = cols[0].trim();       // AIRPORT_ID
+        const code = cols[2].trim();     // ICAO_CODE (or IATA if available in your CSV)
+        if (id && code) airportMap.set(id, code);
+      }
+    }
+    console.log(`✓ Loaded ${airportMap.size} airport codes`);
+  } catch (error) {
+    console.error(`Error loading airports: ${error.message}`);
+  }
+}
+
 /**
  * Load telemetry data from JSON file
+ * Uses streaming for large files to avoid memory issues
  */
 function loadTelemetryData() {
   try {
+    // Check file size first
+    const stats = fs.statSync(TELEMETRY_FILE);
+    const fileSizeMB = stats.size / (1024 * 1024);
+    
+    console.log(`📊 Telemetry file size: ${fileSizeMB.toFixed(2)} MB`);
+    
+    if (fileSizeMB > 400) {
+      console.log('⚠️  WARNING: Large file detected. This may take a moment...');
+    }
+    
+    // Read file in chunks to handle large files
     const data = fs.readFileSync(TELEMETRY_FILE, 'utf8');
+    
+    console.log(`📖 Parsing JSON...`);
     telemetryData = JSON.parse(data);
+    
     console.log(`✓ Loaded ${telemetryData.length} telemetry updates`);
+    console.log(`✓ Memory usage: ~${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB`);
     
     if (telemetryData.length > 0) {
       simulatedStartTime = new Date(telemetryData[0].update_time);
@@ -80,6 +130,13 @@ async function getCascadePrediction(flightUpdate) {
 async function processTelemetryUpdate(update) {
   const enrichedUpdate = { ...update };
   
+  if (airportMap.has(update.origin)) {
+    enrichedUpdate.origin = airportMap.get(update.origin);
+  }
+  if (airportMap.has(update.destination)) {
+    enrichedUpdate.destination = airportMap.get(update.destination);
+  }
+
   // Get ML prediction if flight is delayed
   if (update.current_delay_minutes > 0) {
     const prediction = await getCascadePrediction(update);
@@ -91,8 +148,15 @@ async function processTelemetryUpdate(update) {
   
   // Update active flights map
   const key = `${update.carrier}${update.flight_number}`;
-  activeFlights.set(key, enrichedUpdate);
   
+  // Remove flight if it has arrived (status = 'arrived')
+  if (update.status === 'arrived') {
+    activeFlights.delete(key);
+  } else {
+    // Update active flights map for in-progress flights
+    activeFlights.set(key, enrichedUpdate);
+  }
+
   return enrichedUpdate;
 }
 
@@ -106,7 +170,7 @@ function getUpdatesBatch() {
   
   const now = Date.now();
   const elapsedRealSeconds = (now - startTime) / 1000;
-  const elapsedSimulatedMinutes = elapsedRealSeconds * REPLAY_SPEED;
+  const elapsedSimulatedMinutes = elapsedRealSeconds * REPLAY_SPEED / 60;
   const currentSimulatedTime = new Date(simulatedStartTime.getTime() + elapsedSimulatedMinutes * 60 * 1000);
   
   const batch = [];
@@ -262,6 +326,9 @@ async function startServer() {
   console.log('FLIGHT TELEMETRY STREAMING BACKEND');
   console.log('='.repeat(60));
   
+  // Load airport mapping
+  await loadAirportMappings();
+
   // Load telemetry data
   if (!loadTelemetryData()) {
     console.error('Failed to load telemetry data. Exiting.');
@@ -282,8 +349,16 @@ async function startServer() {
     console.log(`\n✓ Server running on port ${PORT}`);
     console.log(`✓ Socket.IO endpoint: ws://localhost:${PORT}`);
     console.log(`✓ Replay speed: ${REPLAY_SPEED}x (${REPLAY_SPEED} simulated minutes per real second)`);
-    console.log('\nReady to stream telemetry data!');
-    console.log('Connect a client and send "start_stream" event to begin.\n');
+    console.log('\n🚀 AUTO-STARTING STREAM...\n');
+    
+    // Auto-start streaming
+    isStreaming = true;
+    startTime = Date.now();
+    simulatedStartTime = new Date(telemetryData[0].update_time);
+    streamingLoop();
+    
+    console.log('✓ Stream is now running automatically!');
+    console.log('  Clients will receive updates as soon as they connect.\n');
   });
 }
 
