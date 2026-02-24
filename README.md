@@ -41,7 +41,7 @@ Ranked Operator Actions
 
 ### 1. Flight / Task Events (`flight_events_table`)
 - Represents scheduled and actual execution of tasks
-- **Columns:** `event_id`, `asset_id` (TAIL_NUM), `scheduled_time`, `actual_time`, `event_type`, `origin`, `destination`
+- **Columns:** `event_id`, `asset_id` `TAIL_NUM`, `scheduled_time`, `actual_time`, `event_type`, `origin`, `destination`
 - Each row is converted into telemetry emissions
 
 ### 2. Asset Registry (`flight_assets_table`)
@@ -51,7 +51,7 @@ Ranked Operator Actions
 
 ### 3. Cleaned Operational Data (`flights_cleaned_us_only`)
 - Source of truth for time alignment and delay attribution
-- **Columns:** `scheduled_dep_utc`, `scheduled_arr_utc`, `actual_dep_utc`, `actual_arr_utc`, `dep_delay_minutes`, `arr_delay_minutes`, delay causes (weather, late aircraft, etc.)
+- **Columns:** `scheduled_dep_utc`, `scheduled_arr_utc`, `actual_dep_utc`, `actual_arr_utc`, `dep_delay_minutes`, `arr_delay_minutes`, `delay causes (weather, late aircraft, etc.)`
 
 ### 4. Weather Telemetry (`flights_weather_table`)
 - Environmental conditions injected as exogenous disruptions
@@ -181,19 +181,6 @@ Rank interventions by:
 
 This produces operator-ready recommendations.
 
-### STEP 9 — Causal Explanation (Optional, Post-Hoc)
-
-**Input:**
-- `flights_dependency_table`
-- Simulation outcomes
-
-Used to explain:
-- Why an intervention worked
-- Which dependency chains were broken
-- Why a node is high-leverage
-
-This supports trust and explainability, not execution.
-
 ## Outputs
 
 - Ranked intervention list
@@ -202,18 +189,6 @@ This supports trust and explainability, not execution.
 - Mission degradation metrics
 
 All outputs are framed for operator decision support, not analytics.
-
-## Why This Approach Works
-
-- Scales to large systems (no global graph traversal)
-- Mirrors real mission ops execution
-- Supports real-time intervention
-- Separates execution from explanation
-- Aligns with Nominal-style mission operations thinking
-
-## Example Operator Language
-
-> "The simulator continuously replays mission telemetry and evaluates short-horizon counterfactuals to identify where operator action prevents the most downstream degradation."
 
 ## Technologies Used
 
